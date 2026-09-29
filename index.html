@@ -645,7 +645,7 @@
     <div class="modal">
         <div class="modal-title">🔗 Prolonger la vidéo</div>
         <div class="modal-desc">
-            La dernière image de cette vidéo servira de point de départ pour une nouvelle séquence.
+            L'API Agnes va prolonger cette vidéo en se basant sur sa dernière image. Décrivez la suite.
         </div>
         <div class="extend-preview">
             <video id="extend-video" muted playsinline></video>
@@ -683,7 +683,8 @@ const MAX_POLLS = 120;
 const STORAGE_KEY = 'flow_studio_api';
 const GALLERY_KEY = 'flow_studio_gallery';
 
-// ══════════════════════════════════════════════════════════════════// STATE
+// ══════════════════════════════════════════════════════════════════
+// STATE
 // ══════════════════════════════════════════════════════════════════
 const state = {
     mode: 'text-to-video',
@@ -1091,59 +1092,6 @@ async function pollVideo(videoId, onProgress) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// EXTRACT LAST FRAME (CORRIGÉ : fetch blob pour éviter le CORS tainted canvas)
-// ══════════════════════════════════════════════════════════════════
-async function extractLastFrame(videoUrl) {
-    log('Téléchargement de la vidéo en blob…');
-
-    // 1. Fetch la vidéo en blob pour contourner le CORS
-    const res = await fetch(videoUrl, { mode: 'cors' });
-    if (!res.ok) throw new Error('Impossible de télécharger la vidéo (HTTP ' + res.status + ')');
-    const blob = await res.blob();
-    const blobUrl = URL.createObjectURL(blob);
-
-    return new Promise((resolve, reject) => {
-        const video = document.createElement('video');
-        video.muted = true;
-        video.playsInline = true;
-        video.preload = 'auto';
-        video.crossOrigin = 'anonymous';
-
-        const cleanup = () => {
-            try { URL.revokeObjectURL(blobUrl); } catch (e) {}
-        };
-
-        video.addEventListener('loadedmetadata', () => {
-            log('Vidéo chargée, durée: ' + video.duration.toFixed(2) + 's');
-            video.currentTime = Math.max(0, video.duration - 0.05);
-        });
-
-        video.addEventListener('seeked', () => {
-            try {
-                const canvas = document.createElement('canvas');
-                canvas.width = video.videoWidth;
-                canvas.height = video.videoHeight;
-                const ctx = canvas.getContext('2d');
-                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                const dataUri = canvas.toDataURL('image/jpeg', 0.92);
-                cleanup();
-                resolve(dataUri);
-            } catch (e) {
-                cleanup();
-                reject(e);
-            }
-        });
-
-        video.addEventListener('error', () => {
-            cleanup();
-            reject(new Error('Erreur lecture vidéo locale'));
-        });
-
-        video.src = blobUrl;
-    });
-}
-
-// ══════════════════════════════════════════════════════════════════
 // GALLERY RENDER
 // ══════════════════════════════════════════════════════════════════
 function renderGallery() {
@@ -1171,8 +1119,7 @@ function renderGallery() {
 
         const mediaHtml = v.isImage
             ? `<img src="${v.url}" alt="${escapeHtml(v.title)}" data-action="zoom" data-index="${i}">`
-            : `<video src="${v.url}" muted playsinline preload="metadata"
-                 onmouseover="this.play()" onmouseout="this.pause();this.currentTime=0;"></video>`;
+            : `<video src="${v.url}" muted playsinline preload="metadata"></video>`;
 
         const badge = v.isImage ? '🖼️ Image' : `${v.duration.toFixed(1)}s`;
 
@@ -1262,7 +1209,7 @@ function downloadVideo(index) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// EXTEND VIDEO (CORRIGÉ)
+// EXTEND VIDEO — SOLUTION 2 : URL directe passée à l'API
 // ══════════════════════════════════════════════════════════════════
 function openExtend(index) {
     const v = state.videos[index];
@@ -1290,36 +1237,27 @@ $('extend-confirm').addEventListener('click', async () => {
     state.isRunning = true;
     state.stopRequested = false;
     updateGenerateBtn();
-    setStatus('Téléchargement de la vidéo source…');
+    setStatus('Création de la tâche d\'extension…');
 
     try {
-        // 1. Extraire la dernière frame (avec fetch blob pour éviter le CORS)
-        const lastFrameDataUri = await extractLastFrame(video.url);
-        log('Dernière frame extraite : ' + lastFrameDataUri.slice(0, 50) + '…');
-
-        // 2. Convertir en base64 pur (sans préfixe data:image)
-        const pureBase64 = lastFrameDataUri.split(',')[1];
-        if (!pureBase64) throw new Error('Extraction base64 échouée');
-        log('Base64 pur : ' + pureBase64.length + ' caractères');
-
-        // 3. Préparer le prompt d'extension
+        // Prompt d'extension
         const extensionPrompt = buildVideoPrompt(
             (userPrompt || 'Continue the scene naturally, maintaining the same visual style, motion, and atmosphere.') +
             ' This is a direct continuation of the previous shot.'
         );
+        log('Extension prompt: ' + extensionPrompt.slice(0, 200) + '…');
 
-        // 4. Créer la tâche d'extension avec l'image comme point de départ
-        setStatus('Création de la tâche d\'extension…');
-
+        // ✅ SOLUTION 2 : On passe l'URL de la vidéo directement à l'API
+        // L'API Agnes extrait elle-même la dernière frame côté serveur
         const body = {
             model: VIDEO_MODEL,
             prompt: extensionPrompt,
             num_frames: framesFromSeconds(state.duration),
             frame_rate: FRAME_RATE,
-            image: pureBase64
+            image: video.url  // ← URL de la vidéo source
         };
 
-        log('Envoi de la requête d\'extension…');
+        log('Envoi de la requête d\'extension avec URL vidéo…');
 
         const r = await apiFetch(`${API_BASE}/videos`, {
             method: 'POST',
@@ -1340,11 +1278,9 @@ $('extend-confirm').addEventListener('click', async () => {
         if (!videoId) throw new Error('Pas de video_id retourné');
         log('Tâche d\'extension créée : ' + String(videoId).slice(0, 30) + '…');
 
-        // 5. Poll
         const newUrl = await pollVideo(videoId, p => setStatus(p));
         log('Extension terminée : ' + newUrl);
 
-        // 6. Ajouter à la galerie
         addVideo(newUrl, `Extension · ${video.title}`);
         setStatus('✓ Extension terminée');
         toast('Vidéo prolongée ✓');
@@ -1352,7 +1288,7 @@ $('extend-confirm').addEventListener('click', async () => {
 
     } catch (e) {
         log('Erreur extension: ' + e.message);
-        toast('Erreur : ' + e.message.slice(0, 100), 'error', 6000);
+        toast('Erreur : ' + e.message.slice(0, 120), 'error', 7000);
     } finally {
         state.isRunning = false;
         state.stopRequested = false;
