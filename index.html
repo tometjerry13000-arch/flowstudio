@@ -120,7 +120,9 @@
         padding: 0.4rem 0.7rem; border-radius: 20px;
         background: var(--surface-2); border: 1px solid var(--border);
         font-size: 0.75rem; color: var(--ink-2);
+        animation: chipIn 0.3s ease;
     }
+    @keyframes chipIn { from { opacity: 0; transform: scale(0.85); } to { opacity: 1; transform: scale(1); } }
     .attach-chip img {
         width: 24px; height: 24px; border-radius: 6px;
         object-fit: cover;
@@ -147,6 +149,11 @@
         display: flex; align-items: center; gap: 0.4rem;
     }
     .tool-btn:hover { background: var(--surface-2); color: var(--ink); border-color: var(--border-2); }
+    .tool-btn.highlight {
+        background: rgba(255,255,255,0.08);
+        border-color: var(--border-3);
+        color: var(--ink);
+    }
     .btn-generate {
         padding: 0.7rem 1.4rem; border-radius: 10px;
         border: none; background: var(--ink); color: var(--bg);
@@ -332,6 +339,7 @@
     }
     .video-action:hover { background: rgba(255,255,255,0.15); }
     .video-action.danger:hover { background: rgba(239,68,68,0.8); }
+    .video-action.use-prompt:hover { background: rgba(34,197,94,0.8); }
     .video-meta { padding: 0.7rem 0.8rem; }
     .video-title {
         font-size: 0.75rem; font-weight: 600;
@@ -398,6 +406,7 @@
     .toast.visible { transform: translateX(-50%) translateY(0); opacity: 1; }
     .toast.success { border-color: var(--success); }
     .toast.error { border-color: var(--error); }
+    .toast.warn { border-color: var(--warn); }
     .modal-backdrop {
         position: fixed; inset: 0; z-index: 200;
         background: rgba(0,0,0,0.85);
@@ -412,6 +421,7 @@
         border-radius: var(--radius-lg); padding: 1.5rem;
         max-width: 420px; width: 100%;
         transform: scale(0.95); transition: transform 0.25s;
+        max-height: 90vh; overflow-y: auto;
     }
     .modal-backdrop.visible .modal { transform: scale(1); }
     .modal-title {
@@ -437,6 +447,7 @@
     .modal-btn.primary {
         background: var(--ink); color: var(--bg); border-color: var(--ink);
     }
+    .modal-btn.primary:hover { background: var(--accent-dim); }
     .input-field {
         width: 100%; padding: 0.8rem 1rem;
         border-radius: 10px; border: 1px solid var(--border);
@@ -485,6 +496,49 @@
         backdrop-filter: blur(8px);
     }
     .lightbox-close:hover { background: rgba(255,255,255,0.2); }
+    /* Image picker modal */
+    .image-picker-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+        gap: 0.5rem;
+        max-height: 320px;
+        overflow-y: auto;
+        padding: 0.3rem;
+        border-radius: 10px;
+        background: var(--bg);
+        border: 1px solid var(--border);
+    }
+    .image-picker-grid::-webkit-scrollbar { width: 6px; }
+    .image-picker-grid::-webkit-scrollbar-thumb { background: var(--border-3); border-radius: 3px; }
+    .image-picker-item {
+        position: relative;
+        aspect-ratio: 1/1;
+        border-radius: 8px;
+        overflow: hidden;
+        cursor: pointer;
+        border: 2px solid transparent;
+        transition: all 0.2s;
+        background: var(--surface-2);
+    }
+    .image-picker-item:hover { border-color: var(--ink-3); transform: scale(1.03); }
+    .image-picker-item.selected { border-color: var(--ink); }
+    .image-picker-item img {
+        width: 100%; height: 100%; object-fit: cover;
+    }
+    .image-picker-item .picker-label {
+        position: absolute; bottom: 0; left: 0; right: 0;
+        background: linear-gradient(transparent, rgba(0,0,0,0.8));
+        color: #fff; font-size: 0.55rem; padding: 1.2rem 0.3rem 0.3rem;
+        text-align: center;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .image-picker-empty {
+        grid-column: 1 / -1;
+        text-align: center;
+        padding: 2rem 1rem;
+        color: var(--ink-3);
+        font-size: 0.78rem;
+    }
     @media (max-width: 640px) {
         .hero { padding: 1.5rem 0 1rem; }
         .composer { padding: 1rem; }
@@ -533,6 +587,9 @@
             <div class="composer-tools">
                 <button class="tool-btn" id="attach-btn">
                     <span>📎</span> Image
+                </button>
+                <button class="tool-btn" id="gallery-pick-btn">
+                    <span>🖼️</span> Depuis la galerie
                 </button>
                 <input type="file" id="file-input" accept="image/*" style="display:none;">
             </div>
@@ -645,7 +702,7 @@
     <div class="modal">
         <div class="modal-title">🔗 Prolonger la vidéo</div>
         <div class="modal-desc">
-            L'API Agnes va prolonger cette vidéo en se basant sur sa dernière image. Décrivez la suite.
+            La dernière image de cette vidéo servira de point de départ pour une nouvelle séquence.
         </div>
         <div class="extend-preview">
             <video id="extend-video" muted playsinline></video>
@@ -660,6 +717,21 @@
         <div class="modal-actions">
             <button class="modal-btn" id="extend-cancel">Annuler</button>
             <button class="modal-btn primary" id="extend-confirm">Prolonger</button>
+        </div>
+    </div>
+</div>
+
+<!-- Image Picker Modal -->
+<div class="modal-backdrop" id="image-picker-modal">
+    <div class="modal">
+        <div class="modal-title">🖼️ Choisir une image</div>
+        <div class="modal-desc">
+            Sélectionnez une image de votre galerie pour l'utiliser comme référence dans votre prompt.
+        </div>
+        <div class="image-picker-grid" id="image-picker-grid"></div>
+        <div class="modal-actions">
+            <button class="modal-btn" id="image-picker-cancel">Annuler</button>
+            <button class="modal-btn primary" id="image-picker-confirm" disabled>Utiliser cette image</button>
         </div>
     </div>
 </div>
@@ -696,7 +768,8 @@ const state = {
     isRunning: false,
     stopRequested: false,
     videos: [],
-    extendTarget: null
+    extendTarget: null,
+    pickerSelectedIndex: null
 };
 
 // ══════════════════════════════════════════════════════════════════
@@ -750,6 +823,58 @@ function escapeHtml(s) {
 }
 
 // ══════════════════════════════════════════════════════════════════
+// CORS-FRIENDLY IMAGE FETCH — convertit une URL distante en data URI
+// ══════════════════════════════════════════════════════════════════
+async function urlToDataUri(url) {
+    if (!url) throw new Error('URL vide');
+    if (url.startsWith('data:')) return url;
+
+    // 1) Tentative directe (peut marcher si le serveur autorise CORS)
+    try {
+        const res = await fetch(url, { mode: 'cors' });
+        if (res.ok) {
+            const blob = await res.blob();
+            return await blobToDataUri(blob);
+        }
+    } catch (e) {
+        log('Fetch direct échoué: ' + e.message);
+    }
+
+    // 2) Proxies CORS publics en cascade
+    const proxies = [
+        u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+        u => `https://images.weserv.nl/?url=${encodeURIComponent(u.replace(/^https?:\/\//, ''))}`,
+        u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+        u => `https://thingproxy.freeboard.io/fetch/${u}`
+    ];
+
+    for (const makeProxy of proxies) {
+        try {
+            const proxyUrl = makeProxy(url);
+            log('Essai proxy: ' + proxyUrl.slice(0, 80));
+            const res = await fetch(proxyUrl);
+            if (!res.ok) continue;
+            const blob = await res.blob();
+            if (blob.size === 0) continue;
+            return await blobToDataUri(blob);
+        } catch (e) {
+            log('Proxy échoué: ' + e.message);
+        }
+    }
+
+    throw new Error('Impossible de récupérer l\'image (CORS). Ouvrez l\'app via http://localhost.');
+}
+
+function blobToDataUri(blob) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+    });
+}
+
+// ══════════════════════════════════════════════════════════════════
 // GALLERY PERSISTENCE
 // ══════════════════════════════════════════════════════════════════
 function saveGallery() {
@@ -779,7 +904,9 @@ document.querySelectorAll('.mode-tab').forEach(tab => {
         tab.classList.add('active');
         state.mode = tab.dataset.mode;
         $('attach-btn').style.display =
-            (state.mode === 'image-to-video' || state.mode === 'text-to-image') ? 'flex' : 'none';
+            (state.mode === 'image-to-video') ? 'flex' : 'none';
+        $('gallery-pick-btn').style.display =
+            (state.mode === 'image-to-video') ? 'flex' : 'none';
         if (state.mode === 'text-to-video') {
             state.image = null;
             renderAttachments();
@@ -867,6 +994,83 @@ function renderAttachments() {
 }
 
 $('prompt-input').addEventListener('input', updateGenerateBtn);
+
+// ══════════════════════════════════════════════════════════════════
+// UI — IMAGE PICKER (depuis la galerie)
+// ══════════════════════════════════════════════════════════════════
+$('gallery-pick-btn').addEventListener('click', () => {
+    const images = state.videos.filter(v => v.isImage);
+    const grid = $('image-picker-grid');
+    state.pickerSelectedIndex = null;
+    $('image-picker-confirm').disabled = true;
+
+    if (images.length === 0) {
+        grid.innerHTML = `
+            <div class="image-picker-empty">
+                <div style="font-size:1.8rem;margin-bottom:0.4rem;opacity:0.4;">🖼️</div>
+                Aucune image dans la galerie.<br>Générez d'abord une image en mode "Texte → Image".
+            </div>
+        `;
+    } else {
+        grid.innerHTML = images.map((v) => {
+            const globalIndex = state.videos.indexOf(v);
+            return `
+                <div class="image-picker-item" data-index="${globalIndex}">
+                    <img src="${v.url}" alt="${escapeHtml(v.title)}" loading="lazy">
+                    <div class="picker-label">${escapeHtml(v.title.slice(0, 20))}</div>
+                </div>
+            `;
+        }).join('');
+
+        grid.querySelectorAll('.image-picker-item').forEach(item => {
+            item.addEventListener('click', () => {
+                grid.querySelectorAll('.image-picker-item').forEach(el => el.classList.remove('selected'));
+                item.classList.add('selected');
+                state.pickerSelectedIndex = parseInt(item.dataset.index, 10);
+                $('image-picker-confirm').disabled = false;
+            });
+        });
+    }
+
+    $('image-picker-modal').classList.add('visible');
+});
+
+$('image-picker-cancel').addEventListener('click', () => {
+    $('image-picker-modal').classList.remove('visible');
+});
+
+$('image-picker-confirm').addEventListener('click', async () => {
+    if (state.pickerSelectedIndex === null) return;
+    const img = state.videos[state.pickerSelectedIndex];
+    if (!img || !img.isImage) return;
+
+    try {
+        setStatus('Récupération de l\'image…');
+        state.image = await urlToDataUri(img.url);
+        setStatus(null);
+
+        if (state.mode !== 'image-to-video') {
+            document.querySelectorAll('.mode-tab').forEach(t => {
+                t.classList.toggle('active', t.dataset.mode === 'image-to-video');
+            });
+            state.mode = 'image-to-video';
+            $('attach-btn').style.display = 'flex';
+            $('gallery-pick-btn').style.display = 'flex';
+        }
+
+        renderAttachments();
+        updateGenerateBtn();
+        $('image-picker-modal').classList.remove('visible');
+        toast('Image de la galerie utilisée ✓');
+    } catch (e) {
+        setStatus(null);
+        toast('Erreur : ' + e.message.slice(0, 100), 'error', 6000);
+    }
+});
+
+$('image-picker-modal').addEventListener('click', e => {
+    if (e.target === $('image-picker-modal')) $('image-picker-modal').classList.remove('visible');
+});
 
 // ══════════════════════════════════════════════════════════════════
 // UI — API MODAL
@@ -1027,6 +1231,9 @@ async function createImageTask(prompt) {
         cinema: '1792x768',
         square: '1024x1024'
     };
+
+    // On demande directement le base64 si l'API le supporte,
+    // sinon on récupère l'URL et on la convertit via proxy CORS.
     const r = await apiFetch(`${API_BASE}/images/generations`, {
         method: 'POST',
         headers: {
@@ -1037,7 +1244,8 @@ async function createImageTask(prompt) {
             model: IMAGE_MODEL,
             prompt: prompt,
             n: 1,
-            size: sizeMap[state.format] || '1024x1024'
+            size: sizeMap[state.format] || '1024x1024',
+            response_format: 'b64_json'
         })
     });
 
@@ -1046,10 +1254,18 @@ async function createImageTask(prompt) {
         throw new Error(`HTTP ${r.status} — ${err.slice(0, 180)}`);
     }
     const d = await r.json();
-    const url = d.data?.[0]?.url || d.url || d.data?.[0]?.b64_json;
-    if (!url) throw new Error('Pas d\'URL image retournée');
-    if (url.startsWith('http')) return url;
-    return 'data:image/png;base64,' + url;
+
+    // Cas 1 : base64 renvoyé directement
+    const b64 = d.data?.[0]?.b64_json;
+    if (b64) {
+        return 'data:image/png;base64,' + b64;
+    }
+
+    // Cas 2 : URL renvoyée → on la convertit en data URI via proxy
+    const url = d.data?.[0]?.url || d.url;
+    if (!url) throw new Error("Pas d'image retournée");
+
+    return await urlToDataUri(url);
 }
 
 async function pollVideo(videoId, onProgress) {
@@ -1092,6 +1308,67 @@ async function pollVideo(videoId, onProgress) {
 }
 
 // ══════════════════════════════════════════════════════════════════
+// EXTRACT LAST FRAME (avec fallback proxy CORS pour la vidéo)
+// ══════════════════════════════════════════════════════════════════
+async function extractLastFrame(videoUrl) {
+    log('Téléchargement de la vidéo…');
+    let blob;
+    try {
+        const res = await fetch(videoUrl, { mode: 'cors' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        blob = await res.blob();
+    } catch (e) {
+        log('Fetch direct vidéo échoué, tentative via proxy…');
+        const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(videoUrl)}`;
+        const res = await fetch(proxyUrl);
+        if (!res.ok) throw new Error('Impossible de télécharger la vidéo (HTTP ' + res.status + ')');
+        blob = await res.blob();
+    }
+
+    const blobUrl = URL.createObjectURL(blob);
+
+    return new Promise((resolve, reject) => {
+        const video = document.createElement('video');
+        video.muted = true;
+        video.playsInline = true;
+        video.preload = 'auto';
+        video.crossOrigin = 'anonymous';
+
+        const cleanup = () => {
+            try { URL.revokeObjectURL(blobUrl); } catch (e) {}
+        };
+
+        video.addEventListener('loadedmetadata', () => {
+            log('Vidéo chargée, durée: ' + video.duration.toFixed(2) + 's');
+            video.currentTime = Math.max(0, video.duration - 0.05);
+        });
+
+        video.addEventListener('seeked', () => {
+            try {
+                const canvas = document.createElement('canvas');
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const dataUri = canvas.toDataURL('image/jpeg', 0.92);
+                cleanup();
+                resolve(dataUri);
+            } catch (e) {
+                cleanup();
+                reject(e);
+            }
+        });
+
+        video.addEventListener('error', () => {
+            cleanup();
+            reject(new Error('Erreur lecture vidéo locale'));
+        });
+
+        video.src = blobUrl;
+    });
+}
+
+// ══════════════════════════════════════════════════════════════════
 // GALLERY RENDER
 // ══════════════════════════════════════════════════════════════════
 function renderGallery() {
@@ -1119,9 +1396,14 @@ function renderGallery() {
 
         const mediaHtml = v.isImage
             ? `<img src="${v.url}" alt="${escapeHtml(v.title)}" data-action="zoom" data-index="${i}">`
-            : `<video src="${v.url}" muted playsinline preload="metadata"></video>`;
+            : `<video src="${v.url}" muted playsinline preload="metadata"
+                 onmouseover="this.play()" onmouseout="this.pause();this.currentTime=0;"></video>`;
 
         const badge = v.isImage ? '🖼️ Image' : `${v.duration.toFixed(1)}s`;
+
+        const useInPromptBtn = v.isImage
+            ? `<button class="video-action use-prompt" data-action="useInPrompt" data-index="${i}" title="Utiliser dans le prompt">✏️</button>`
+            : '';
 
         return `
             <div class="video-card" data-index="${i}">
@@ -1129,6 +1411,7 @@ function renderGallery() {
                     ${mediaHtml}
                     <div class="video-badge">${badge}</div>
                     <div class="video-actions">
+                        ${useInPromptBtn}
                         ${!v.isImage ? `<button class="video-action" data-action="extend" data-index="${i}" title="Prolonger">🔗</button>` : ''}
                         <button class="video-action" data-action="download" data-index="${i}" title="Télécharger">⬇</button>
                         <button class="video-action danger" data-action="delete" data-index="${i}" title="Supprimer">✕</button>
@@ -1157,8 +1440,41 @@ function renderGallery() {
             else if (action === 'download') downloadVideo(idx);
             else if (action === 'extend') openExtend(idx);
             else if (action === 'zoom') openLightbox(state.videos[idx].url);
+            else if (action === 'useInPrompt') useImageInPrompt(idx);
         });
     });
+}
+
+// Utiliser une image de la galerie comme image source pour le prompt
+async function useImageInPrompt(index) {
+    const img = state.videos[index];
+    if (!img || !img.isImage) return;
+
+    try {
+        setStatus('Récupération de l\'image…');
+        state.image = await urlToDataUri(img.url);
+        setStatus(null);
+
+        if (state.mode !== 'image-to-video') {
+            document.querySelectorAll('.mode-tab').forEach(t => {
+                t.classList.toggle('active', t.dataset.mode === 'image-to-video');
+            });
+            state.mode = 'image-to-video';
+            $('attach-btn').style.display = 'flex';
+            $('gallery-pick-btn').style.display = 'flex';
+        }
+
+        renderAttachments();
+        updateGenerateBtn();
+
+        $('prompt-input').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        $('prompt-input').focus();
+
+        toast('Image prête à être utilisée dans le prompt ✓');
+    } catch (e) {
+        setStatus(null);
+        toast('Erreur : ' + e.message.slice(0, 100), 'error', 6000);
+    }
 }
 
 function addVideo(url, title) {
@@ -1209,7 +1525,7 @@ function downloadVideo(index) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// EXTEND VIDEO — SOLUTION 2 : URL directe passée à l'API
+// EXTEND VIDEO
 // ══════════════════════════════════════════════════════════════════
 function openExtend(index) {
     const v = state.videos[index];
@@ -1237,27 +1553,32 @@ $('extend-confirm').addEventListener('click', async () => {
     state.isRunning = true;
     state.stopRequested = false;
     updateGenerateBtn();
-    setStatus('Création de la tâche d\'extension…');
+    setStatus('Téléchargement de la vidéo source…');
 
     try {
-        // Prompt d'extension
+        const lastFrameDataUri = await extractLastFrame(video.url);
+        log('Dernière frame extraite : ' + lastFrameDataUri.slice(0, 50) + '…');
+
+        const pureBase64 = lastFrameDataUri.split(',')[1];
+        if (!pureBase64) throw new Error('Extraction base64 échouée');
+        log('Base64 pur : ' + pureBase64.length + ' caractères');
+
         const extensionPrompt = buildVideoPrompt(
             (userPrompt || 'Continue the scene naturally, maintaining the same visual style, motion, and atmosphere.') +
             ' This is a direct continuation of the previous shot.'
         );
-        log('Extension prompt: ' + extensionPrompt.slice(0, 200) + '…');
 
-        // ✅ SOLUTION 2 : On passe l'URL de la vidéo directement à l'API
-        // L'API Agnes extrait elle-même la dernière frame côté serveur
+        setStatus('Création de la tâche d\'extension…');
+
         const body = {
             model: VIDEO_MODEL,
             prompt: extensionPrompt,
             num_frames: framesFromSeconds(state.duration),
             frame_rate: FRAME_RATE,
-            image: video.url  // ← URL de la vidéo source
+            image: pureBase64
         };
 
-        log('Envoi de la requête d\'extension avec URL vidéo…');
+        log('Envoi de la requête d\'extension…');
 
         const r = await apiFetch(`${API_BASE}/videos`, {
             method: 'POST',
@@ -1288,7 +1609,7 @@ $('extend-confirm').addEventListener('click', async () => {
 
     } catch (e) {
         log('Erreur extension: ' + e.message);
-        toast('Erreur : ' + e.message.slice(0, 120), 'error', 7000);
+        toast('Erreur : ' + e.message.slice(0, 100), 'error', 6000);
     } finally {
         state.isRunning = false;
         state.stopRequested = false;
@@ -1323,8 +1644,8 @@ $('generate-btn').addEventListener('click', async () => {
 
             addImageToGallery(url, userPrompt.slice(0, 40) || 'Image générée');
             setStatus('✓ Image générée');
-            toast('Image générée ✓');
-            await sleep(2000);
+            toast('Image générée ✓ — Utilisez ✏️ pour la mettre dans le prompt');
+            await sleep(2500);
 
         } else {
             setStatus('Création de la tâche…');
@@ -1363,6 +1684,7 @@ $('generate-btn').addEventListener('click', async () => {
     renderGallery();
     updateGenerateBtn();
     $('attach-btn').style.display = 'none';
+    $('gallery-pick-btn').style.display = 'none';
 
     $('prompt-input').addEventListener('keydown', e => {
         if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
@@ -1370,7 +1692,7 @@ $('generate-btn').addEventListener('click', async () => {
         }
     });
 
-    log('Flow Studio prêt');
+    log('Flow Studio prêt — utilisez ✏️ sur une image pour l\'injecter dans le prompt');
 })();
 </script>
 
