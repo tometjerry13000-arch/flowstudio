@@ -149,11 +149,6 @@
         display: flex; align-items: center; gap: 0.4rem;
     }
     .tool-btn:hover { background: var(--surface-2); color: var(--ink); border-color: var(--border-2); }
-    .tool-btn.highlight {
-        background: rgba(255,255,255,0.08);
-        border-color: var(--border-3);
-        color: var(--ink);
-    }
     .btn-generate {
         padding: 0.7rem 1.4rem; border-radius: 10px;
         border: none; background: var(--ink); color: var(--bg);
@@ -496,7 +491,6 @@
         backdrop-filter: blur(8px);
     }
     .lightbox-close:hover { background: rgba(255,255,255,0.2); }
-    /* Image picker modal */
     .image-picker-grid {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
@@ -721,7 +715,6 @@
     </div>
 </div>
 
-<!-- Image Picker Modal -->
 <div class="modal-backdrop" id="image-picker-modal">
     <div class="modal">
         <div class="modal-title">🖼️ Choisir une image</div>
@@ -823,13 +816,32 @@ function escapeHtml(s) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// CORS-FRIENDLY IMAGE FETCH — convertit une URL distante en data URI
+// IMAGE HELPERS
 // ══════════════════════════════════════════════════════════════════
+function blobToDataUri(blob) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+    });
+}
+
+function dataUriToBlob(dataUri) {
+    const [header, base64] = dataUri.split(',');
+    const mime = header.match(/:(.*?);/)[1];
+    const byteString = atob(base64);
+    const ab = new ArrayBuffer(byteString.length);
+    const ia = new Uint8Array(ab);
+    for (let i = 0; i < byteString.length; i++) ia[i] = byteString.charCodeAt(i);
+    return new Blob([ab], { type: mime });
+}
+
 async function urlToDataUri(url) {
     if (!url) throw new Error('URL vide');
     if (url.startsWith('data:')) return url;
 
-    // 1) Tentative directe (peut marcher si le serveur autorise CORS)
+    // Tentative directe
     try {
         const res = await fetch(url, { mode: 'cors' });
         if (res.ok) {
@@ -840,37 +852,152 @@ async function urlToDataUri(url) {
         log('Fetch direct échoué: ' + e.message);
     }
 
-    // 2) Proxies CORS publics en cascade
+    // Proxies CORS publics
+    const cleanUrl = url.replace(/^https?:\/\//, '');
     const proxies = [
-        u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
-        u => `https://images.weserv.nl/?url=${encodeURIComponent(u.replace(/^https?:\/\//, ''))}`,
-        u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
-        u => `https://thingproxy.freeboard.io/fetch/${u}`
+        u => `https://wsrv.nl/?url=${encodeURIComponent(cleanUrl)}&output=png`,
+        u => `https://corsproxy.org/?${encodeURIComponent(u)}`,
+        u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`
     ];
 
     for (const makeProxy of proxies) {
         try {
             const proxyUrl = makeProxy(url);
-            log('Essai proxy: ' + proxyUrl.slice(0, 80));
+            log('Essai proxy: ' + proxyUrl.slice(0, 90));
             const res = await fetch(proxyUrl);
             if (!res.ok) continue;
             const blob = await res.blob();
             if (blob.size === 0) continue;
+            log('Proxy OK, taille: ' + blob.size);
             return await blobToDataUri(blob);
         } catch (e) {
             log('Proxy échoué: ' + e.message);
         }
     }
 
-    throw new Error('Impossible de récupérer l\'image (CORS). Ouvrez l\'app via http://localhost.');
+    throw new Error('CORS bloqué sur toutes les tentatives.');
 }
 
-function blobToDataUri(blob) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = reject;
-        reader.readAsDataURL(blob);
+// ══════════════════════════════════════════════════════════════════
+// UPLOAD IMAGE VERS HÉBERGEUR PUBLIC
+// L'API Agnes exige une URL publique pour l'image de référence.
+// ══════════════════════════════════════════════════════════════════
+async function uploadImageToPublicHost(dataUri) {
+    log('Upload de l\'image vers un hébergeur public…');
+    const blob = dataUriToBlob(dataUri);
+
+    // Tentative 1 : catbox.moe
+    try {
+        const formData = new FormData();
+        formData.append('reqtype', 'fileupload');
+        formData.append('fileToUpload', blob, 'flow_reference.png');
+
+        const res = await fetch('https://catbox.moe/user/api.php', {
+            method: 'POST',
+            body: formData
+        });
+
+        if (res.ok) {
+            const text = (await res.text()).trim();
+            if (text.startsWith('http')) {
+                log('✅ Catbox OK: ' + text);
+                return text;
+            }
+            log('Catbox réponse invalide: ' + text.slice(0, 100));
+        } else {
+            log('Catbox HTTP ' + res.status);
+        }
+    } catch (e) {
+        log('Catbox échoué: ' + e.message);
+    }
+
+    // Tentative 2 : 0x0.st
+    try {
+        const formData = new FormData();
+        formData.append('file', blob, 'flow_reference.png');
+
+        const res = await fetch('https://0x0.st', {
+            method: 'POST',
+            body: formData
+        });
+
+        if (res.ok) {
+            const text = (await res.text()).trim();
+            if (text.startsWith('http')) {
+                log('✅ 0x0.st OK: ' + text);
+                return text;
+            }
+        } else {
+            log('0x0.st HTTP ' + res.status);
+        }
+    } catch (e) {
+        log('0x0.st échoué: ' + e.message);
+    }
+
+    // Tentative 3 : uguu.se
+    try {
+        const formData = new FormData();
+        formData.append('files[]', blob, 'flow_reference.png');
+
+        const res = await fetch('https://uguu.se/upload.php', {
+            method: 'POST',
+            body: formData
+        });
+
+        if (res.ok) {
+            const data = await res.json();
+            const url = data?.files?.[0]?.url;
+            if (url && url.startsWith('http')) {
+                log('✅ uguu.se OK: ' + url);
+                return url;
+            }
+        } else {
+            log('uguu.se HTTP ' + res.status);
+        }
+    } catch (e) {
+        log('uguu.se échoué: ' + e.message);
+    }
+
+    throw new Error('Impossible d\'uploader l\'image vers un hébergeur public. Réessayez.');
+}
+
+// ══════════════════════════════════════════════════════════════════
+// NORMALISATION DE L'IMAGE DE RÉFÉRENCE
+// ══════════════════════════════════════════════════════════════════
+function normalizeImageForFormat(dataUri, format) {
+    const targetSize = {
+        portrait:  { w: 768,  h: 1344 },
+        landscape: { w: 1344, h: 768  },
+        square:    { w: 1024, h: 1024 },
+        cinema:    { w: 1536, h: 640  }
+    }[format] || { w: 1024, h: 1024 };
+
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+            try {
+                const canvas = document.createElement('canvas');
+                canvas.width = targetSize.w;
+                canvas.height = targetSize.h;
+                const ctx = canvas.getContext('2d');
+                ctx.fillStyle = '#000';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                const scale = Math.max(targetSize.w / img.width, targetSize.h / img.height);
+                const w = img.width * scale;
+                const h = img.height * scale;
+                const x = (targetSize.w - w) / 2;
+                const y = (targetSize.h - h) / 2;
+                ctx.drawImage(img, x, y, w, h);
+
+                resolve(canvas.toDataURL('image/jpeg', 0.95));
+            } catch (e) {
+                log('Normalisation échouée: ' + e.message);
+                resolve(dataUri);
+            }
+        };
+        img.onerror = () => resolve(dataUri);
+        img.src = dataUri;
     });
 }
 
@@ -880,8 +1007,15 @@ function blobToDataUri(blob) {
 function saveGallery() {
     try {
         const data = state.videos.map(v => ({
-            url: v.url, title: v.title, duration: v.duration,
-            format: v.format, style: v.style, isImage: v.isImage || false,
+            url: v.url,
+            sourceUrl: v.sourceUrl || null,
+            prompt: v.prompt || '',
+            isDataUri: v.isDataUri || false,
+            title: v.title,
+            duration: v.duration,
+            format: v.format,
+            style: v.style,
+            isImage: v.isImage || false,
             timestamp: v.timestamp
         }));
         localStorage.setItem(GALLERY_KEY, JSON.stringify(data));
@@ -996,7 +1130,7 @@ function renderAttachments() {
 $('prompt-input').addEventListener('input', updateGenerateBtn);
 
 // ══════════════════════════════════════════════════════════════════
-// UI — IMAGE PICKER (depuis la galerie)
+// UI — IMAGE PICKER
 // ══════════════════════════════════════════════════════════════════
 $('gallery-pick-btn').addEventListener('click', () => {
     const images = state.videos.filter(v => v.isImage);
@@ -1044,33 +1178,65 @@ $('image-picker-confirm').addEventListener('click', async () => {
     const img = state.videos[state.pickerSelectedIndex];
     if (!img || !img.isImage) return;
 
-    try {
-        setStatus('Récupération de l\'image…');
-        state.image = await urlToDataUri(img.url);
-        setStatus(null);
-
-        if (state.mode !== 'image-to-video') {
-            document.querySelectorAll('.mode-tab').forEach(t => {
-                t.classList.toggle('active', t.dataset.mode === 'image-to-video');
-            });
-            state.mode = 'image-to-video';
-            $('attach-btn').style.display = 'flex';
-            $('gallery-pick-btn').style.display = 'flex';
-        }
-
+    // Cas 1 : data URI
+    if (img.url && img.url.startsWith('data:')) {
+        state.image = img.url;
+        activateI2VMode();
         renderAttachments();
         updateGenerateBtn();
         $('image-picker-modal').classList.remove('visible');
-        toast('Image de la galerie utilisée ✓');
-    } catch (e) {
+        toast('Image utilisée ✓');
+        return;
+    }
+
+    // Cas 2 : tentative via proxies
+    try {
+        setStatus('Récupération…');
+        state.image = await urlToDataUri(img.url);
         setStatus(null);
-        toast('Erreur : ' + e.message.slice(0, 100), 'error', 6000);
+        activateI2VMode();
+        renderAttachments();
+        updateGenerateBtn();
+        $('image-picker-modal').classList.remove('visible');
+        toast('Image utilisée ✓');
+        return;
+    } catch (e) {
+        log('Picker: fetch échoué: ' + e.message);
+    }
+
+    // Cas 3 : fallback prompt
+    setStatus(null);
+    $('image-picker-modal').classList.remove('visible');
+    if (img.prompt) {
+        $('prompt-input').value = img.prompt;
+        document.querySelectorAll('.mode-tab').forEach(t => {
+            t.classList.toggle('active', t.dataset.mode === 'text-to-video');
+        });
+        state.mode = 'text-to-video';
+        state.image = null;
+        renderAttachments();
+        updateGenerateBtn();
+        $('prompt-input').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        toast('Prompt restauré — relancez la génération', 'warn', 5000);
+    } else {
+        toast('Impossible de récupérer l\'image (CORS)', 'error', 5000);
     }
 });
 
 $('image-picker-modal').addEventListener('click', e => {
     if (e.target === $('image-picker-modal')) $('image-picker-modal').classList.remove('visible');
 });
+
+function activateI2VMode() {
+    if (state.mode !== 'image-to-video') {
+        document.querySelectorAll('.mode-tab').forEach(t => {
+            t.classList.toggle('active', t.dataset.mode === 'image-to-video');
+        });
+        state.mode = 'image-to-video';
+        $('attach-btn').style.display = 'flex';
+        $('gallery-pick-btn').style.display = 'flex';
+    }
+}
 
 // ══════════════════════════════════════════════════════════════════
 // UI — API MODAL
@@ -1130,26 +1296,28 @@ const FORMAT_PROMPTS = {
 };
 
 function buildVideoPrompt(userPrompt) {
-    const parts = [];
-    const isPixar = state.style === 'pixar';
+    const isI2V = state.mode === 'image-to-video' && state.image;
 
-    if (state.mode === 'image-to-video' && state.image) {
-        parts.push(
-            'Animate this exact image as the starting frame. ' +
-            'The subject must remain IDENTICAL to the source: same face, same expression, same clothing, same identity. ' +
-            'This is a CONTINUATION of the source image.'
-        );
+    if (isI2V) {
+        // ═══ IMAGE → VIDÉO : prompt ULTRA-COURT ═══
+        // Les modèles de diffusion ignorent les longues listes négatives.
+        // Un prompt court et direct est mieux suivi.
+        let p = 'Subtle natural motion only. The subject, background, colors, lighting, and composition must remain identical to the reference image. ';
+        if (userPrompt) {
+            p += 'Motion: ' + userPrompt;
+        } else {
+            p += 'The subject blinks once.';
+        }
+        return p;
     }
 
+    // ═══ TEXTE → VIDÉO : prompt complet ═══
+    const parts = [];
     parts.push(STYLE_PROMPTS[state.style]);
     parts.push(QUALITY_PROMPTS[state.quality]);
-
     if (userPrompt) parts.push(userPrompt);
-
     parts.push('Smooth natural motion, 24fps, ' + FORMAT_PROMPTS[state.format]);
     parts.push('No text overlays, no subtitles, no watermarks.');
-    if (isPixar) parts.push('Consistent character design, family-friendly animation.');
-
     return parts.join(' ');
 }
 
@@ -1166,7 +1334,7 @@ function buildImagePrompt(userPrompt) {
 // ══════════════════════════════════════════════════════════════════
 // API FETCH
 // ══════════════════════════════════════════════════════════════════
-async function apiFetch(url, opts = {}, label = 'API') {
+async function apiFetch(url, opts = {}) {
     for (let a = 0; a < 7; a++) {
         if (state.stopRequested) throw new Error('Arrêt demandé');
         try {
@@ -1201,9 +1369,30 @@ async function createVideoTask(prompt, imageDataUri = null) {
         num_frames: framesFromSeconds(state.duration),
         frame_rate: FRAME_RATE
     };
+
     if (imageDataUri) {
-        body.image = imageDataUri;
+        // 1. Normaliser l'image au format choisi
+        const normalized = await normalizeImageForFormat(imageDataUri, state.format);
+
+        // 2. ⚠️ UPLOADER vers un hébergeur public — l'API Agnes EXIGE une URL publique
+        setStatus('Upload de l\'image de référence…');
+        const publicUrl = await uploadImageToPublicHost(normalized);
+
+        // 3. Envoyer l'URL publique (pas le base64)
+        body.image = publicUrl;
+
+        // 4. Paramètres de fidélité
+        body.strength = 0.15;
+        body.image_weight = 1.0;
+        body.init_image_strength = 1.0;
+
+        // 5. Prompt négatif (seul paramètre négatif vraiment supporté)
+        body.negative_prompt = 'style change, color change, face morphing, identity change, wardrobe change, added elements, removed elements, background change, new characters, text, watermark, camera movement, scene transition, multiple actions, distortion, deformation';
+
+        log('Image URL publique envoyée: ' + publicUrl);
     }
+
+    log('Body envoyé: ' + JSON.stringify({ ...body, image: body.image ? '[URL]' : undefined }).slice(0, 400));
 
     const r = await apiFetch(`${API_BASE}/videos`, {
         method: 'POST',
@@ -1219,6 +1408,8 @@ async function createVideoTask(prompt, imageDataUri = null) {
         throw new Error(`HTTP ${r.status} — ${err.slice(0, 180)}`);
     }
     const d = await r.json();
+    log('Réponse création vidéo: ' + JSON.stringify(d).slice(0, 300));
+
     const id = d.video_id || d.id || d.task_id;
     if (!id) throw new Error('Pas de video_id retourné');
     return id;
@@ -1232,8 +1423,6 @@ async function createImageTask(prompt) {
         square: '1024x1024'
     };
 
-    // On demande directement le base64 si l'API le supporte,
-    // sinon on récupère l'URL et on la convertit via proxy CORS.
     const r = await apiFetch(`${API_BASE}/images/generations`, {
         method: 'POST',
         headers: {
@@ -1254,18 +1443,27 @@ async function createImageTask(prompt) {
         throw new Error(`HTTP ${r.status} — ${err.slice(0, 180)}`);
     }
     const d = await r.json();
+    log('Réponse API image: ' + JSON.stringify(d).slice(0, 400));
 
     // Cas 1 : base64 renvoyé directement
     const b64 = d.data?.[0]?.b64_json;
     if (b64) {
-        return 'data:image/png;base64,' + b64;
+        log('✅ Base64 reçu directement');
+        return { dataUri: 'data:image/png;base64,' + b64, sourceUrl: null };
     }
 
-    // Cas 2 : URL renvoyée → on la convertit en data URI via proxy
+    // Cas 2 : URL renvoyée
     const url = d.data?.[0]?.url || d.url;
     if (!url) throw new Error("Pas d'image retournée");
 
-    return await urlToDataUri(url);
+    log('⚠️ API renvoie une URL, tentative de conversion…');
+    try {
+        const dataUri = await urlToDataUri(url);
+        return { dataUri, sourceUrl: url };
+    } catch (e) {
+        log('❌ Conversion impossible: ' + e.message);
+        return { dataUri: null, sourceUrl: url };
+    }
 }
 
 async function pollVideo(videoId, onProgress) {
@@ -1308,7 +1506,7 @@ async function pollVideo(videoId, onProgress) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// EXTRACT LAST FRAME (avec fallback proxy CORS pour la vidéo)
+// EXTRACT LAST FRAME
 // ══════════════════════════════════════════════════════════════════
 async function extractLastFrame(videoUrl) {
     log('Téléchargement de la vidéo…');
@@ -1319,7 +1517,7 @@ async function extractLastFrame(videoUrl) {
         blob = await res.blob();
     } catch (e) {
         log('Fetch direct vidéo échoué, tentative via proxy…');
-        const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(videoUrl)}`;
+        const proxyUrl = `https://corsproxy.org/?${encodeURIComponent(videoUrl)}`;
         const res = await fetch(proxyUrl);
         if (!res.ok) throw new Error('Impossible de télécharger la vidéo (HTTP ' + res.status + ')');
         blob = await res.blob();
@@ -1445,35 +1643,53 @@ function renderGallery() {
     });
 }
 
-// Utiliser une image de la galerie comme image source pour le prompt
 async function useImageInPrompt(index) {
     const img = state.videos[index];
     if (!img || !img.isImage) return;
 
+    // Cas 1 : data URI
+    if (img.url && img.url.startsWith('data:')) {
+        state.image = img.url;
+        activateI2VMode();
+        renderAttachments();
+        updateGenerateBtn();
+        $('prompt-input').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        $('prompt-input').focus();
+        toast('Image prête à être utilisée ✓');
+        return;
+    }
+
+    // Cas 2 : tentative via proxies
     try {
         setStatus('Récupération de l\'image…');
         state.image = await urlToDataUri(img.url);
         setStatus(null);
-
-        if (state.mode !== 'image-to-video') {
-            document.querySelectorAll('.mode-tab').forEach(t => {
-                t.classList.toggle('active', t.dataset.mode === 'image-to-video');
-            });
-            state.mode = 'image-to-video';
-            $('attach-btn').style.display = 'flex';
-            $('gallery-pick-btn').style.display = 'flex';
-        }
-
+        activateI2VMode();
         renderAttachments();
         updateGenerateBtn();
+        $('prompt-input').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        toast('Image prête à être utilisée ✓');
+        return;
+    } catch (e) {
+        log('Fetch image échoué: ' + e.message);
+    }
 
+    // Cas 3 : fallback prompt
+    setStatus(null);
+    if (img.prompt) {
+        $('prompt-input').value = img.prompt;
+        document.querySelectorAll('.mode-tab').forEach(t => {
+            t.classList.toggle('active', t.dataset.mode === 'text-to-video');
+        });
+        state.mode = 'text-to-video';
+        state.image = null;
+        renderAttachments();
+        updateGenerateBtn();
         $('prompt-input').scrollIntoView({ behavior: 'smooth', block: 'center' });
         $('prompt-input').focus();
-
-        toast('Image prête à être utilisée dans le prompt ✓');
-    } catch (e) {
-        setStatus(null);
-        toast('Erreur : ' + e.message.slice(0, 100), 'error', 6000);
+        toast('Prompt restauré — relancez la génération', 'warn', 5000);
+    } else {
+        toast('Impossible de récupérer l\'image (CORS)', 'error', 5000);
     }
 }
 
@@ -1490,13 +1706,17 @@ function addVideo(url, title) {
     renderGallery();
 }
 
-function addImageToGallery(url, title) {
+function addImageToGallery(dataUriOrUrl, title, originalPrompt = '', isDataUri = true) {
     state.videos.unshift({
-        url, title,
+        url: dataUriOrUrl,
+        sourceUrl: isDataUri ? null : dataUriOrUrl,
+        prompt: originalPrompt,
+        title,
         duration: 0,
         format: state.format,
         style: state.style,
         isImage: true,
+        isDataUri,
         timestamp: Date.now()
     });
     saveGallery();
@@ -1557,16 +1777,13 @@ $('extend-confirm').addEventListener('click', async () => {
 
     try {
         const lastFrameDataUri = await extractLastFrame(video.url);
-        log('Dernière frame extraite : ' + lastFrameDataUri.slice(0, 50) + '…');
+        const normalized = await normalizeImageForFormat(lastFrameDataUri, state.format);
 
-        const pureBase64 = lastFrameDataUri.split(',')[1];
-        if (!pureBase64) throw new Error('Extraction base64 échouée');
-        log('Base64 pur : ' + pureBase64.length + ' caractères');
+        setStatus('Upload de l\'image de référence…');
+        const publicUrl = await uploadImageToPublicHost(normalized);
 
-        const extensionPrompt = buildVideoPrompt(
-            (userPrompt || 'Continue the scene naturally, maintaining the same visual style, motion, and atmosphere.') +
-            ' This is a direct continuation of the previous shot.'
-        );
+        const extensionPrompt = 'Subtle natural motion only. The first frame of this clip must be identical to the reference image. ' +
+            (userPrompt || 'Continue the scene naturally.');
 
         setStatus('Création de la tâche d\'extension…');
 
@@ -1575,10 +1792,12 @@ $('extend-confirm').addEventListener('click', async () => {
             prompt: extensionPrompt,
             num_frames: framesFromSeconds(state.duration),
             frame_rate: FRAME_RATE,
-            image: pureBase64
+            image: publicUrl,
+            strength: 0.15,
+            image_weight: 1.0,
+            init_image_strength: 1.0,
+            negative_prompt: 'style change, color change, face morphing, identity change, wardrobe change, added elements, removed elements, background change, new characters, text, watermark, camera movement, scene transition, multiple actions, distortion, deformation'
         };
-
-        log('Envoi de la requête d\'extension…');
 
         const r = await apiFetch(`${API_BASE}/videos`, {
             method: 'POST',
@@ -1597,10 +1816,8 @@ $('extend-confirm').addEventListener('click', async () => {
         const d = await r.json();
         const videoId = d.video_id || d.id || d.task_id;
         if (!videoId) throw new Error('Pas de video_id retourné');
-        log('Tâche d\'extension créée : ' + String(videoId).slice(0, 30) + '…');
 
         const newUrl = await pollVideo(videoId, p => setStatus(p));
-        log('Extension terminée : ' + newUrl);
 
         addVideo(newUrl, `Extension · ${video.title}`);
         setStatus('✓ Extension terminée');
@@ -1640,17 +1857,29 @@ $('generate-btn').addEventListener('click', async () => {
         if (state.mode === 'text-to-image') {
             setStatus('Génération de l\'image…');
             const prompt = buildImagePrompt(userPrompt);
-            const url = await createImageTask(prompt);
+            const result = await createImageTask(prompt);
 
-            addImageToGallery(url, userPrompt.slice(0, 40) || 'Image générée');
-            setStatus('✓ Image générée');
-            toast('Image générée ✓ — Utilisez ✏️ pour la mettre dans le prompt');
+            const finalUrl = result.dataUri || result.sourceUrl;
+            addImageToGallery(
+                finalUrl,
+                userPrompt.slice(0, 40) || 'Image générée',
+                userPrompt,
+                !!result.dataUri
+            );
+
+            if (result.dataUri) {
+                setStatus('✓ Image générée');
+                toast('Image générée ✓ — Utilisez ✏️ pour la mettre dans le prompt');
+            } else {
+                setStatus('✓ Image générée (URL distante)');
+                toast('Image générée ✓ — Le CORS empêche l\'injection directe', 'warn', 5000);
+            }
             await sleep(2500);
 
         } else {
             setStatus('Création de la tâche…');
             const prompt = buildVideoPrompt(userPrompt);
-            log('Prompt: ' + prompt.slice(0, 200) + '…');
+            log('Prompt: ' + prompt.slice(0, 250) + '…');
 
             const imageForTask = (state.mode === 'image-to-video' && state.image) ? state.image : null;
             const videoId = await createVideoTask(prompt, imageForTask);
@@ -1692,7 +1921,7 @@ $('generate-btn').addEventListener('click', async () => {
         }
     });
 
-    log('Flow Studio prêt — utilisez ✏️ sur une image pour l\'injecter dans le prompt');
+    log('Flow Studio prêt — mode Image→Vidéo utilise catbox.moe pour l\'upload');
 })();
 </script>
 
